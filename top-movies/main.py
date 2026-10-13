@@ -7,9 +7,18 @@ from flask_wtf import FlaskForm
 from wtforms import StringField, SubmitField
 from wtforms.validators import DataRequired
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-
-
+session = requests.Session()
+retry = Retry(
+    total=4,
+    connect=4,
+    read=4,
+    backoff_factor=1,
+    status_forcelist=[500, 502, 503, 504],
+)
+session.mount("https://", HTTPAdapter(max_retries=retry))
 
 MOVIE_DB_API_KEY = "16f4917c7aa6862a7f675b6673f19eaa"
 MOVIE_DB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie"
@@ -71,21 +80,30 @@ def add_movie():
     form = FindMovieForm()
     if form.validate_on_submit():
         movie_title = form.title.data
-        response = requests.get(MOVIE_DB_SEARCH_URL, params={
-                                "api_key": MOVIE_DB_API_KEY, "query": movie_title})
-        data = response.json()["results"]
+        try:
+            response = session.get(MOVIE_DB_SEARCH_URL, params={
+                "api_key": MOVIE_DB_API_KEY, "query": movie_title}, timeout=10)
+            response.raise_for_status()
+            data = response.json()["results"]
+        except requests.exceptions.RequestException as e:
+            print("TMDB request failed:", e)
+            data = []
         return render_template("select.html", options=data)
     return render_template("add.html", form=form)
-
 
 @app.route("/find")
 def find_movie():
     movie_api_id = request.args.get("id")
     if movie_api_id:
         movie_api_url = f"{MOVIE_DB_INFO_URL}/{movie_api_id}"
-        response = requests.get(movie_api_url, params={
-                                "api_key": MOVIE_DB_API_KEY, "language": "en-US"})
-        data = response.json()
+        try:
+            response = session.get(movie_api_url, params={
+                "api_key": MOVIE_DB_API_KEY, "language": "en-US"}, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+        except requests.exceptions.RequestException as e:
+            print("TMDB request failed:", e)
+            return redirect(url_for("add_movie"))
         new_movie = Movie(
             title=data["title"],
             year=data["release_date"].split("-")[0],
@@ -95,7 +113,6 @@ def find_movie():
         db.session.add(new_movie)
         db.session.commit()
         return redirect(url_for("rate_movie", id=new_movie.id))
-
 
 @app.route("/edit", methods=["GET", "POST"])
 def rate_movie():
@@ -119,5 +136,5 @@ def delete_movie():
     return redirect(url_for("home"))
 
 
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    app.run(debug=True, port=5001)
